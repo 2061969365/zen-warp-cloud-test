@@ -74,7 +74,7 @@ jobs:
       - name: Setup WARP
         uses: fscarmen/warp-on-actions@v1.3
         with:
-          stack: dual
+          stack: ipv4
           mode: client
 
       - name: Fix DNS
@@ -83,9 +83,8 @@ jobs:
           sudo systemctl disable systemd-resolved 2>/dev/null || true
           sudo rm -f /etc/resolv.conf
           echo -e "nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 1.0.0.1" | sudo tee /etc/resolv.conf
-          echo "Public IPv4: $(curl -s --max-time 10 https://api.ipify.org || echo '?')"
-          echo "Public IPv6: $(curl -s --max-time 10 https://api6.ipify.org 2>/dev/null || echo 'none')"
-          curl -s --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=|colo=' || true
+          echo "Public IPv4: $(curl -s4 --max-time 10 https://api.ipify.org || echo '?')"
+          curl -s4 --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=|colo=' || true
 
       - name: Install cloudflared
         run: |
