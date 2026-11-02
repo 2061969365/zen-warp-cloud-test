@@ -86,7 +86,15 @@ jobs:
           echo "Public IPv4: $(curl -s4 --max-time 10 https://api.ipify.org || echo '?')"
           curl -s4 --max-time 10 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=|colo=' || true
 
+      - name: Cache cloudflared binary
+        id: cache-cloudflared
+        uses: actions/cache@v4
+        with:
+          path: bin/cloudflared
+          key: cloudflared-linux-amd64-v1
+
       - name: Install cloudflared
+        if: steps.cache-cloudflared.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           curl -fsSL --retry 3 --retry-delay 2 \
