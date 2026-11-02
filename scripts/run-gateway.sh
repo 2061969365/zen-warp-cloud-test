@@ -39,19 +39,19 @@ warn() { say "WARN $*";  echo "::warning::$*"; }
 
 try_warp_refresh() {
   if command -v warp-cli >/dev/null 2>&1; then
-    say "WARP: 重新注册以获取全新 Cloudflare 设备身份与出口 IPv4..."
+    say "WARP: 重新注册以获取全新 Cloudflare 设备身份与双栈出口..."
     sudo warp-cli --accept-tos disconnect 2>/dev/null || true
     sudo warp-cli --accept-tos registration delete 2>/dev/null || true
     sleep 0.5
     sudo warp-cli --accept-tos registration new 2>/dev/null || true
     sudo warp-cli --accept-tos mode warp+doh 2>/dev/null || true
-    sudo warp-cli --accept-tos tunnel ip add-range ::0/0 2>/dev/null || true
     sudo warp-cli --accept-tos connect 2>/dev/null || true
     sleep 1.5
-    local new_ip
+    local new_ip new_v6
     new_ip="$(curl -s4 --max-time 6 https://api.ipify.org 2>/dev/null || echo '?')"
-    say "WARP: 新设备注册完成，获得全新出口 IPv4=$new_ip"
-    printf '%s\n' "$new_ip" > "$RUN/egress-ip.txt"
+    new_v6="$(curl -s6 --max-time 6 https://api6.ipify.org 2>/dev/null || echo 'none')"
+    say "WARP: 新设备注册完成，获得全新出口 IPv4=$new_ip IPv6=$new_v6"
+    printf '%s %s\n' "$new_ip" "$new_v6" > "$RUN/egress-ip.txt"
     return 0
   fi
   return 1
@@ -59,8 +59,9 @@ try_warp_refresh() {
 
 # 记录初始出口 IP
 curr_ip="$(curl -s4 --max-time 6 https://api.ipify.org 2>/dev/null || echo '?')"
-printf '%s\n' "$curr_ip" > "$RUN/egress-ip.txt"
-say "WARP 初始出口 IPv4=$curr_ip"
+curr_v6="$(curl -s6 --max-time 6 https://api6.ipify.org 2>/dev/null || echo 'none')"
+printf '%s %s\n' "$curr_ip" "$curr_v6" > "$RUN/egress-ip.txt"
+say "WARP 初始出口 IPv4=$curr_ip IPv6=$curr_v6"
 
 stop_proc() {
   local pid="$1" name="$2" i
