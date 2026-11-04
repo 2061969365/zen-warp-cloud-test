@@ -30,6 +30,9 @@ jobs:
       PROMPT: ${{ inputs.prompt }}
       SHARD: ${{ matrix.shard }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Pre-WARP egress
         run: |
           echo "RAW_IPV4=$(curl -s4 --max-time 10 https://api.ipify.org || echo '?')"
@@ -108,6 +111,94 @@ jobs:
           printf '%s' "$clean" > /tmp/t2.txt
           echo "T2_RC=$rc" >> "$GITHUB_ENV"
 
+      - name: Probe our binary gateway
+        run: |
+          set +e
+          chmod +x bin/zen-direct
+          mkdir -p run
+          GW_MODEL="${MODEL#opencode/}"
+          jq -n --arg m "$GW_MODEL" --arg p "$PROMPT" \
+            '{model:$m,messages:[{role:"user",content:$p}],max_tokens:64,stream:true}' > /tmp/gw_req.json
+
+          start_gw() {
+            PORT=18081 \
+            LOG_FILE="$PWD/run/gateway.log" \
+            SHIM_SESSION_FILE="$PWD/run/shim_sessions.json" \
+            DIRECT_DIAG=1 \
+            DIRECT_DEBUG=0 \
+            DIRECT_CONCURRENCY=4 \
+            DIRECT_FREELIMIT_COOLDOWN=0 \
+            DIRECT_FRESH_PER_TURN=0 \
+            ZEN_TLS=bun \
+            ZEN_RUN_ID="${GITHUB_RUN_ID:-}" \
+            DIRECT_SIDECAR=off \
+            bin/zen-direct >> run/gateway.stdio.log 2>&1 &
+            GW_PID=$!
+          }
+
+          stop_gw() {
+            if [ -n "${GW_PID:-}" ]; then
+              kill "$GW_PID" 2>/dev/null || true
+              wait "$GW_PID" 2>/dev/null || true
+            fi
+          }
+
+          wait_gw() {
+            for _ in $(seq 1 60); do
+              health=$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://127.0.0.1:18081/health 2>/dev/null)
+              [ "$health" = "200" ] && return 0
+              kill -0 "$GW_PID" 2>/dev/null || return 1
+              sleep 2
+            done
+            return 1
+          }
+
+          probe_gw() {
+            GW_CODE=$(curl -sS -o /tmp/gw_body -w '%{http_code}' --max-time 180 \
+              -H 'Content-Type: application/json' \
+              -H 'Authorization: Bearer public' \
+              -H 'User-Agent: zen-probe' \
+              --data-binary @/tmp/gw_req.json \
+              http://127.0.0.1:18081/v1/chat/completions 2>/tmp/gw.err)
+            [ $? -ne 0 ] && GW_CODE=000
+            GW_BODY=$(head -c 500 /tmp/gw_body 2>/dev/null | tr '\n' ' ')
+          }
+
+          start_gw
+          if ! wait_gw; then
+            echo "GW gateway not healthy"
+            tail -20 run/gateway.log 2>/dev/null || true
+            tail -20 run/gateway.stdio.log 2>/dev/null || true
+            GW_CODE=000
+            GW_BODY="gateway_not_healthy"
+          else
+            probe_gw
+            echo "GW attempt1 code=$GW_CODE body=$GW_BODY"
+            if [ "$GW_CODE" != "200" ]; then
+              echo "GW reconnect WARP and restart gateway..."
+              sudo warp-cli --accept-tos disconnect || true
+              sleep 3
+              sudo warp-cli --accept-tos connect || true
+              sleep 3
+              stop_gw
+              sleep 1
+              start_gw
+              if wait_gw; then
+                probe_gw
+                echo "GW attempt2 code=$GW_CODE body=$GW_BODY"
+              else
+                GW_CODE=000
+                GW_BODY="gateway_not_healthy_after_reconnect"
+              fi
+            fi
+          fi
+          stop_gw
+          {
+            echo "GW_CODE=$GW_CODE"
+            echo "GW_BODY=$GW_BODY"
+          } > /tmp/gw_result
+          exit 0
+
       - name: Summary
         if: always()
         run: |
@@ -142,8 +233,30 @@ jobs:
           v1, v2 = verdict(t1), verdict(t2)
           model = os.environ.get('MODEL', '?')
           shard = os.environ.get('SHARD', '?')
+
+          gw = {}
+          for line in rd('/tmp/gw_result').splitlines():
+              if '=' in line:
+                  k, v = line.split('=', 1)
+                  gw[k] = v
+          gcode, gbody = gw.get('GW_CODE', '?'), gw.get('GW_BODY', '')
+
+          def gw_verdict(code, body):
+              low = body.lower()
+              if code == '200' and body:
+                  return 'OK'
+              if code == '429' or 'freeusagelimiterror' in low or 'free usage limit' in low:
+                  return '429'
+              if code == '000':
+                  return 'NO_GATEWAY'
+              if 'model' in low and ('unavailable' in low or 'not found' in low):
+                  return 'MODEL_BAD'
+              return 'HTTP_' + code
+
+          gv = gw_verdict(gcode, gbody)
           print(f"### Shard {shard} - `{model}`")
           print(f"- Turn1: **{v1}** rc={os.environ.get('T1_RC','?')} | `{t1[-200:].replace(chr(10), ' ')}`")
           print(f"- Turn2 (WARP reconnect): **{v2}** rc={os.environ.get('T2_RC','?')} | `{t2[-200:].replace(chr(10), ' ')}`")
-          print(f"RESULT shard={shard} model={model} v1={v1} v2={v2}", file=sys.stderr)
+          print(f"- Gateway zen-direct: **{gv}** http={gcode} | `{gbody[-200:].replace('`', chr(39))}`")
+          print(f"RESULT shard={shard} model={model} v1={v1} v2={v2} gw={gv} gw_http={gcode}", file=sys.stderr)
           PY
