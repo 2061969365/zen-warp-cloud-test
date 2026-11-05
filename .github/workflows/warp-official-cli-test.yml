@@ -162,8 +162,12 @@ jobs:
               http://127.0.0.1:18081/v1/chat/completions 2>/tmp/gw.err)
             [ $? -ne 0 ] && GW_CODE=000
             GW_BODY=$(head -c 500 /tmp/gw_body 2>/dev/null | tr '\n' ' ')
+            GW_TAIL=$(tail -c 300 /tmp/gw_body 2>/dev/null | tr '\n' ' ')
+            if grep -qi '"content":"ok"' /tmp/gw_body 2>/dev/null; then GW_TEXT_OK=1; else GW_TEXT_OK=0; fi
           }
 
+          GW_TEXT_OK=0
+          GW_TAIL=""
           start_gw
           if ! wait_gw; then
             echo "GW gateway not healthy"
@@ -173,8 +177,8 @@ jobs:
             GW_BODY="gateway_not_healthy"
           else
             probe_gw
-            echo "GW attempt1 code=$GW_CODE body=$GW_BODY"
-            if [ "$GW_CODE" != "200" ]; then
+            echo "GW attempt1 code=$GW_CODE content_ok=$GW_TEXT_OK body=$GW_BODY"
+            if [ "$GW_CODE" != "200" ] || [ "$GW_TEXT_OK" != "1" ]; then
               echo "GW reconnect WARP and restart gateway..."
               sudo warp-cli --accept-tos disconnect || true
               sleep 3
@@ -185,10 +189,12 @@ jobs:
               start_gw
               if wait_gw; then
                 probe_gw
-                echo "GW attempt2 code=$GW_CODE body=$GW_BODY"
+                echo "GW attempt2 code=$GW_CODE content_ok=$GW_TEXT_OK body=$GW_BODY"
               else
                 GW_CODE=000
                 GW_BODY="gateway_not_healthy_after_reconnect"
+                GW_TEXT_OK=0
+                GW_TAIL=""
               fi
             fi
           fi
@@ -196,6 +202,8 @@ jobs:
           {
             echo "GW_CODE=$GW_CODE"
             echo "GW_BODY=$GW_BODY"
+            echo "GW_TAIL=$GW_TAIL"
+            echo "GW_TEXT_OK=$GW_TEXT_OK"
           } > /tmp/gw_result
           exit 0
 
@@ -240,11 +248,14 @@ jobs:
                   k, v = line.split('=', 1)
                   gw[k] = v
           gcode, gbody = gw.get('GW_CODE', '?'), gw.get('GW_BODY', '')
+          gtail, gtext = gw.get('GW_TAIL', ''), gw.get('GW_TEXT_OK', '0')
 
-          def gw_verdict(code, body):
+          def gw_verdict(code, body, text_ok):
               low = body.lower()
-              if code == '200' and body:
+              if code == '200' and text_ok == '1':
                   return 'OK'
+              if code == '200':
+                  return 'HTTP200_NO_TEXT'
               if code == '429' or 'freeusagelimiterror' in low or 'free usage limit' in low:
                   return '429'
               if code == '000':
@@ -253,10 +264,10 @@ jobs:
                   return 'MODEL_BAD'
               return 'HTTP_' + code
 
-          gv = gw_verdict(gcode, gbody)
+          gv = gw_verdict(gcode, gbody, gtext)
           print(f"### Shard {shard} - `{model}`")
           print(f"- Turn1: **{v1}** rc={os.environ.get('T1_RC','?')} | `{t1[-200:].replace(chr(10), ' ')}`")
           print(f"- Turn2 (WARP reconnect): **{v2}** rc={os.environ.get('T2_RC','?')} | `{t2[-200:].replace(chr(10), ' ')}`")
-          print(f"- Gateway zen-direct: **{gv}** http={gcode} | `{gbody[-200:].replace('`', chr(39))}`")
-          print(f"RESULT shard={shard} model={model} v1={v1} v2={v2} gw={gv} gw_http={gcode}", file=sys.stderr)
+          print(f"- Gateway zen-direct: **{gv}** http={gcode} content_ok={gtext} | `{gtail[-200:].replace('`', chr(39))}`")
+          print(f"RESULT shard={shard} model={model} v1={v1} v2={v2} gw={gv} gw_http={gcode} gw_content={gtext}", file=sys.stderr)
           PY
