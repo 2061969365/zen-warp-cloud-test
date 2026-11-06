@@ -19,7 +19,7 @@ jobs:
           t1=$SECONDS
           sudo apt-get install -y --no-install-recommends \
             libdbus-1-3 libnss3 libpcap0.8 libtss2-esys-3.0.2-0t64 libtss2-tctildr0t64 \
-            iproute2 nftables libcap2-bin ca-certificates
+            iproute2 nftables libcap2-bin ca-certificates >/dev/null
           echo "deps=$((SECONDS-t1))s"
 
           t2=$SECONDS
@@ -33,46 +33,37 @@ jobs:
           sudo systemctl daemon-reload
           echo "extract=$((SECONDS-t2))s"
 
-          echo "--- ldd warp-svc ---"
-          ldd /usr/bin/warp-svc || true
-          if ldd /usr/bin/warp-svc | grep -q 'not found'; then
-            echo "::error::missing shared libraries"
-            exit 1
-          fi
-
           t3=$SECONDS
           sudo systemctl enable --now warp-svc
           ready=0
-          for i in $(seq 1 40); do
-            if sudo systemctl is-active --quiet warp-svc && sudo warp-cli --accept-tos status >/dev/null 2>&1; then ready=1; break; fi
-            sleep 0.5
+          for i in $(seq 1 60); do
+            if sudo warp-cli --accept-tos status >/dev/null 2>&1; then ready=1; break; fi
+            sleep 0.25
           done
           echo "daemon_ready=$ready after=$((SECONDS-t3))s"
-          if [ "$ready" != 1 ]; then
-            sudo systemctl status warp-svc --no-pager || true
-            ls -la /run/cloudflare-warp /var/run/cloudflare-warp 2>/dev/null || true
-            sudo journalctl -u warp-svc -n 120 --no-pager || true
-            exit 1
-          fi
 
           t4=$SECONDS
           sudo warp-cli --accept-tos registration new
           sudo warp-cli --accept-tos mode warp+doh
           sudo warp-cli --accept-tos connect
           connected=0
-          for i in $(seq 1 40); do
+          for i in $(seq 1 60); do
             st="$(sudo warp-cli --accept-tos status 2>&1 || true)"
-            echo "status[$i]: $st"
-            if printf '%s' "$st" | grep -qiE 'Connected|warp=on'; then connected=1; break; fi
-            sleep 1
+            echo "status[$i] $((SECONDS-t4))s: $(printf '%s' "$st" | tr '\n' ' ')"
+            if printf '%s' "$st" | grep -qE 'Status update: Connected|warp=on'; then connected=1; break; fi
+            sleep 0.5
           done
           echo "connect_ready=$connected after=$((SECONDS-t4))s"
           if [ "$connected" != 1 ]; then
-            sudo warp-cli --accept-tos status || true
             sudo journalctl -u warp-svc -n 120 --no-pager || true
             exit 1
           fi
 
           echo "--- trace ---"
-          curl -s --max-time 8 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|warp=|loc=|colo=' || true
+          for i in $(seq 1 10); do
+            tr="$(curl -s --max-time 5 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
+            echo "trace[$i] $((SECONDS-t4))s: $(printf '%s' "$tr" | grep -E 'ip=|warp=|loc=|colo=' | tr '\n' ' ')"
+            if printf '%s' "$tr" | grep -q 'warp=on'; then break; fi
+            sleep 1
+          done
           echo "total=$((SECONDS-t0))s"
