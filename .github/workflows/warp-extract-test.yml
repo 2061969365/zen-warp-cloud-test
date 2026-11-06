@@ -35,8 +35,6 @@ jobs:
 
           echo "--- ldd warp-svc ---"
           ldd /usr/bin/warp-svc || true
-          echo "--- ldd warp-cli ---"
-          ldd /usr/bin/warp-cli || true
           if ldd /usr/bin/warp-svc | grep -q 'not found'; then
             echo "::error::missing shared libraries"
             exit 1
@@ -45,14 +43,15 @@ jobs:
           t3=$SECONDS
           sudo systemctl enable --now warp-svc
           ready=0
-          for i in $(seq 1 30); do
-            if sudo systemctl is-active --quiet warp-svc; then ready=1; break; fi
+          for i in $(seq 1 40); do
+            if sudo systemctl is-active --quiet warp-svc && sudo warp-cli --accept-tos status >/dev/null 2>&1; then ready=1; break; fi
             sleep 0.5
           done
-          echo "daemon_active=$ready after=$((SECONDS-t3))s"
+          echo "daemon_ready=$ready after=$((SECONDS-t3))s"
           if [ "$ready" != 1 ]; then
             sudo systemctl status warp-svc --no-pager || true
-            sudo journalctl -u warp-svc -n 80 --no-pager || true
+            ls -la /run/cloudflare-warp /var/run/cloudflare-warp 2>/dev/null || true
+            sudo journalctl -u warp-svc -n 120 --no-pager || true
             exit 1
           fi
 
@@ -70,7 +69,7 @@ jobs:
           echo "connect_ready=$connected after=$((SECONDS-t4))s"
           if [ "$connected" != 1 ]; then
             sudo warp-cli --accept-tos status || true
-            sudo journalctl -u warp-svc -n 100 --no-pager || true
+            sudo journalctl -u warp-svc -n 120 --no-pager || true
             exit 1
           fi
 
