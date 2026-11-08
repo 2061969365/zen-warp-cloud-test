@@ -342,18 +342,8 @@ while :; do
 
   if [ -s "$REASON" ]; then
     reason_msg="$(head -c 200 "$REASON")"
-    say "捕获到日志 429，尝试 WARP 换 IP..."
     : > "$REASON"
-    try_warp_refresh || true
-    stop_proc "$GW_PID" gateway
-    start_gateway
-    wait_local_health 60 || true
-    probe_once "$BOOT_BASE" 30
-    if [ "$(verdict)" != "ok" ]; then
-      rotate "日志命中 429 且换 IP 后仍失败：$reason_msg" fast
-    else
-      say "WARP 换 IP 成功自愈！"
-    fi
+    say "日志出现 429：网关已自行轮换会话，外层不重启；等周期探针确认（$reason_msg）"
   fi
 
   if [ "$SECONDS" -ge "$MAX_RUN" ]; then
